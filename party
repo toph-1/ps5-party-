@@ -1,94 +1,74 @@
 #!/bin/bash
 
 # ===============================
-# PS5 ADVANCED TRACKER (IP + PORT)
+# FAST PS5 TRACKER (STABLE)
 # ===============================
 
 if [ "$EUID" -ne 0 ]; then
-    echo "Run with: sudo ./ps5_ports.sh"
+    echo "Run with: sudo ./ps5_fast.sh"
     exit 1
 fi
-
-apt update >/dev/null
-apt install -y tcpdump curl >/dev/null
 
 read -p "Enter PS5 IP: " PS5_IP
 
 IFACE=$(ip route | grep default | awk '{print $5}')
 [ -z "$IFACE" ] && IFACE="any"
 
-TMP_FILE="/tmp/ps5_endpoints.txt"
-> "$TMP_FILE"
+DATA_FILE="/tmp/ps5_data.txt"
+> "$DATA_FILE"
 
-LAST_SEEN="/tmp/ps5_last_seen.txt"
-> "$LAST_SEEN"
+echo "🎮 Starting fast tracker..."
+sleep 1
 
-clear
-echo "🎮 PS5 TRACKER (IP + PORT)"
-echo "Tracking: $PS5_IP"
-echo "Interface: $IFACE"
-echo "======================================"
-sleep 2
-
+# Background packet capture (FAST, no lag)
 tcpdump -i $IFACE host $PS5_IP -nn -l 2>/dev/null | while read line; do
 
     NOW=$(date +%s)
 
-    # Extract IP:PORT pairs
-    ENDPOINTS=$(echo "$line" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}\.[0-9]+' )
-
-    for ep in $ENDPOINTS; do
+    echo "$line" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}\.[0-9]+' | while read ep; do
         IP=$(echo $ep | sed 's/\.[0-9]*$//')
         PORT=$(echo $ep | grep -oE '[0-9]+$')
 
         if [ "$IP" != "$PS5_IP" ]; then
-
-            KEY="$IP:$PORT"
-
-            # Update last seen
-            grep -v "^$KEY " $LAST_SEEN > ${LAST_SEEN}.tmp
-            echo "$KEY $NOW" >> ${LAST_SEEN}.tmp
-            mv ${LAST_SEEN}.tmp $LAST_SEEN
-
-            # New endpoint
-            if ! grep -q "^$KEY$" "$TMP_FILE"; then
-                echo "$KEY" >> "$TMP_FILE"
-
-                INFO=$(curl -s "http://ip-api.com/line/$IP?fields=country,isp" | paste -sd " - ")
-
-                echo ""
-                echo "➕ NEW: $KEY"
-                echo "   Info: $INFO"
-                sleep 1
-            fi
+            echo "$IP:$PORT $NOW" >> "$DATA_FILE"
         fi
     done
 
+done &
+
+# Display loop (smooth refresh)
+while true; do
     clear
-    echo "🎮 PS5 TRACKER (IP + PORT)"
+    echo "🎮 PS5 FAST TRACKER"
     echo "Time: $(date)"
-    echo "PS5: $PS5_IP"
+    echo "Tracking: $PS5_IP"
     echo "======================================"
 
-    COUNT=$(wc -l < "$TMP_FILE")
+    NOW=$(date +%s)
+
+    # Get unique endpoints
+    awk '{print $1}' $DATA_FILE | sort | uniq > /tmp/ps5_unique.txt
+
+    COUNT=$(wc -l < /tmp/ps5_unique.txt)
     echo "🌐 Total Endpoints: $COUNT"
     echo ""
 
-    echo "📡 Active Connections:"
     while read ep; do
-        LAST=$(grep "^$ep " $LAST_SEEN | awk '{print $2}')
+        LAST=$(grep "$ep" $DATA_FILE | tail -n1 | awk '{print $2}')
         AGE=$((NOW - LAST))
 
-        if [ "$AGE" -lt 10 ]; then
+        if [ "$AGE" -lt 5 ]; then
             STATUS="🟢 ACTIVE"
         else
             STATUS="🔴 IDLE"
         fi
 
         echo "$ep - $STATUS (${AGE}s ago)"
-    done < "$TMP_FILE"
+    done < /tmp/ps5_unique.txt
 
     echo ""
     echo "======================================"
-    echo "Watching live traffic..."
+    echo "Updating every 2s..."
+
+    sleep 2
 done
