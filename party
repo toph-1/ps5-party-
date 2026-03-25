@@ -1,32 +1,30 @@
 #!/bin/bash
 
 # ===============================
-# ADVANCED PS5 ENDPOINT TRACKER
+# PS5 ADVANCED TRACKER (IP + PORT)
 # ===============================
 
 if [ "$EUID" -ne 0 ]; then
-    echo "Run with: sudo ./ps5_advanced.sh"
+    echo "Run with: sudo ./ps5_ports.sh"
     exit 1
 fi
 
-# Install tools if missing
 apt update >/dev/null
 apt install -y tcpdump curl >/dev/null
 
 read -p "Enter PS5 IP: " PS5_IP
 
-# Detect interface
 IFACE=$(ip route | grep default | awk '{print $5}')
 [ -z "$IFACE" ] && IFACE="any"
 
-TMP_FILE="/tmp/ps5_ips.txt"
+TMP_FILE="/tmp/ps5_endpoints.txt"
 > "$TMP_FILE"
 
 LAST_SEEN="/tmp/ps5_last_seen.txt"
 > "$LAST_SEEN"
 
 clear
-echo "🎮 ADVANCED PS5 TRACKER"
+echo "🎮 PS5 TRACKER (IP + PORT)"
 echo "Tracking: $PS5_IP"
 echo "Interface: $IFACE"
 echo "======================================"
@@ -36,25 +34,30 @@ tcpdump -i $IFACE host $PS5_IP -nn -l 2>/dev/null | while read line; do
 
     NOW=$(date +%s)
 
-    IPS=$(echo "$line" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}')
+    # Extract IP:PORT pairs
+    ENDPOINTS=$(echo "$line" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}\.[0-9]+' )
 
-    for ip in $IPS; do
-        if [ "$ip" != "$PS5_IP" ]; then
+    for ep in $ENDPOINTS; do
+        IP=$(echo $ep | sed 's/\.[0-9]*$//')
+        PORT=$(echo $ep | grep -oE '[0-9]+$')
 
-            # Save last seen time
-            grep -v "^$ip " $LAST_SEEN > ${LAST_SEEN}.tmp
-            echo "$ip $NOW" >> ${LAST_SEEN}.tmp
+        if [ "$IP" != "$PS5_IP" ]; then
+
+            KEY="$IP:$PORT"
+
+            # Update last seen
+            grep -v "^$KEY " $LAST_SEEN > ${LAST_SEEN}.tmp
+            echo "$KEY $NOW" >> ${LAST_SEEN}.tmp
             mv ${LAST_SEEN}.tmp $LAST_SEEN
 
-            # If new IP
-            if ! grep -q "^$ip$" "$TMP_FILE"; then
-                echo "$ip" >> "$TMP_FILE"
+            # New endpoint
+            if ! grep -q "^$KEY$" "$TMP_FILE"; then
+                echo "$KEY" >> "$TMP_FILE"
 
-                # Optional lookup
-                INFO=$(curl -s "http://ip-api.com/line/$ip?fields=country,isp" | paste -sd " - ")
+                INFO=$(curl -s "http://ip-api.com/line/$IP?fields=country,isp" | paste -sd " - ")
 
                 echo ""
-                echo "➕ NEW ENDPOINT: $ip"
+                echo "➕ NEW: $KEY"
                 echo "   Info: $INFO"
                 sleep 1
             fi
@@ -62,19 +65,18 @@ tcpdump -i $IFACE host $PS5_IP -nn -l 2>/dev/null | while read line; do
     done
 
     clear
-    echo "🎮 ADVANCED PS5 TRACKER"
+    echo "🎮 PS5 TRACKER (IP + PORT)"
     echo "Time: $(date)"
     echo "PS5: $PS5_IP"
-    echo "Interface: $IFACE"
     echo "======================================"
 
     COUNT=$(wc -l < "$TMP_FILE")
-    echo "🌐 Total Unique Endpoints: $COUNT"
+    echo "🌐 Total Endpoints: $COUNT"
     echo ""
 
-    echo "📡 Active Endpoints:"
-    while read ip; do
-        LAST=$(grep "^$ip " $LAST_SEEN | awk '{print $2}')
+    echo "📡 Active Connections:"
+    while read ep; do
+        LAST=$(grep "^$ep " $LAST_SEEN | awk '{print $2}')
         AGE=$((NOW - LAST))
 
         if [ "$AGE" -lt 10 ]; then
@@ -83,7 +85,7 @@ tcpdump -i $IFACE host $PS5_IP -nn -l 2>/dev/null | while read line; do
             STATUS="🔴 IDLE"
         fi
 
-        echo "$ip - $STATUS (${AGE}s ago)"
+        echo "$ep - $STATUS (${AGE}s ago)"
     done < "$TMP_FILE"
 
     echo ""
