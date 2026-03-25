@@ -1,52 +1,25 @@
 #!/bin/bash
 
 # ===============================
-# PS5 ROUTER + TRAFFIC TRACKER
+# PS5 PARTY ACTIVITY MONITOR
 # ===============================
 
 if [ "$EUID" -ne 0 ]; then
-    echo "Run with sudo ./ps5_router_tracker.sh"
+    echo "Run with sudo ./ps5_party_monitor.sh"
     exit 1
 fi
 
-echo "🎮 PS5 Router + Tracker Tool"
+echo "🎮 PS5 Party Activity Monitor"
 sleep 1
 
-# -------------------------------
-# Step 1: Enable IP forwarding
-# -------------------------------
-echo "[1/4] Enabling IP forwarding..."
-sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
+read -p "Enter PS5 IP: " PS5_IP
+read -p "Enter hotspot interface (connected to PS5): " HOTSPOT_IF
 
-# -------------------------------
-# Step 2: Configure NAT
-# -------------------------------
-read -p "Enter your internet-facing interface (e.g., wlan0, eth0): " WAN_IF
-read -p "Enter your hotspot interface (AP) for PS5 (e.g., wlan1): " HOTSPOT_IF
-
-echo "[2/4] Setting up NAT..."
-sudo iptables -F
-sudo iptables -t nat -F
-sudo iptables -t nat -A POSTROUTING -o $WAN_IF -j MASQUERADE
-sudo iptables -A FORWARD -i $HOTSPOT_IF -o $WAN_IF -j ACCEPT
-sudo iptables -A FORWARD -i $WAN_IF -o $HOTSPOT_IF -m state --state ESTABLISHED,RELATED -j ACCEPT
-
-# -------------------------------
-# Step 3: Ask for PS5 IP
-# -------------------------------
-read -p "Enter your PS5 IP (on hotspot subnet, e.g., 10.42.0.x): " PS5_IP
-
-# -------------------------------
-# Step 4: Start traffic tracker
-# -------------------------------
-echo "[3/4] Starting PS5 traffic capture..."
-DATA_FILE="/tmp/ps5_data.txt"
+# Temp files
+DATA_FILE="/tmp/ps5_party_data.txt"
 > "$DATA_FILE"
-LAST_SEEN="/tmp/ps5_last_seen.txt"
+LAST_SEEN="/tmp/ps5_party_last.txt"
 > "$LAST_SEEN"
-
-echo "[4/4] Tracker active. Press CTRL+C to stop."
-sleep 1
 
 # Background capture
 tcpdump -i $HOTSPOT_IF host $PS5_IP -nn -l 2>/dev/null | while read line; do
@@ -56,13 +29,11 @@ tcpdump -i $HOTSPOT_IF host $PS5_IP -nn -l 2>/dev/null | while read line; do
     for ep in $ENDPOINTS; do
         IP=$(echo $ep | sed 's/\.[0-9]*$//')
         PORT=$(echo $ep | grep -oE '[0-9]+$')
-
         if [ "$IP" != "$PS5_IP" ]; then
             KEY="$IP:$PORT"
             grep -v "^$KEY " $LAST_SEEN > ${LAST_SEEN}.tmp
             echo "$KEY $NOW" >> ${LAST_SEEN}.tmp
             mv ${LAST_SEEN}.tmp $LAST_SEEN
-
             if ! grep -q "^$KEY$" "$DATA_FILE"; then
                 echo "$KEY" >> "$DATA_FILE"
             fi
@@ -70,13 +41,13 @@ tcpdump -i $HOTSPOT_IF host $PS5_IP -nn -l 2>/dev/null | while read line; do
     done
 done &
 
-# Display loop (smooth)
+# Display loop
 while true; do
     clear
-    echo "🎮 PS5 Router + Tracker"
+    echo "🎮 PS5 PARTY MONITOR"
     echo "Time: $(date)"
     echo "PS5 IP: $PS5_IP"
-    echo "Hotspot IF: $HOTSPOT_IF | Internet IF: $WAN_IF"
+    echo "Interface: $HOTSPOT_IF"
     echo "======================================"
 
     NOW=$(date +%s)
@@ -88,8 +59,16 @@ while true; do
     while read ep; do
         LAST=$(grep "^$ep " $LAST_SEEN | tail -n1 | awk '{print $2}')
         AGE=$((NOW - LAST))
-        if [ "$AGE" -lt 5 ]; then STATUS="🟢 ACTIVE"; else STATUS="🔴 IDLE"; fi
-        echo "$ep - $STATUS (${AGE}s ago)"
+        if [ "$AGE" -lt 3 ]; then STATUS="🟢 ACTIVE"; else STATUS="🔴 IDLE"; fi
+
+        # Voice spike detection (UDP traffic)
+        if echo "$ep" | grep -qE "3478|3479|3480"; then
+            ACT="🎤 Possible Voice Traffic"
+        else
+            ACT=""
+        fi
+
+        echo "$ep - $STATUS $ACT"
     done < /tmp/ps5_unique.txt
 
     echo ""
