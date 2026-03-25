@@ -1,74 +1,99 @@
 #!/bin/bash
 
 # ===============================
-# FAST PS5 TRACKER (STABLE)
+# PS5 ROUTER + TRAFFIC TRACKER
 # ===============================
 
 if [ "$EUID" -ne 0 ]; then
-    echo "Run with: sudo ./ps5_fast.sh"
+    echo "Run with sudo ./ps5_router_tracker.sh"
     exit 1
 fi
 
-read -p "Enter PS5 IP: " PS5_IP
-
-IFACE=$(ip route | grep default | awk '{print $5}')
-[ -z "$IFACE" ] && IFACE="any"
-
-DATA_FILE="/tmp/ps5_data.txt"
-> "$DATA_FILE"
-
-echo "🎮 Starting fast tracker..."
+echo "🎮 PS5 Router + Tracker Tool"
 sleep 1
 
-# Background packet capture (FAST, no lag)
-tcpdump -i $IFACE host $PS5_IP -nn -l 2>/dev/null | while read line; do
+# -------------------------------
+# Step 1: Enable IP forwarding
+# -------------------------------
+echo "[1/4] Enabling IP forwarding..."
+sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
 
+# -------------------------------
+# Step 2: Configure NAT
+# -------------------------------
+read -p "Enter your internet-facing interface (e.g., wlan0, eth0): " WAN_IF
+read -p "Enter your hotspot interface (AP) for PS5 (e.g., wlan1): " HOTSPOT_IF
+
+echo "[2/4] Setting up NAT..."
+sudo iptables -F
+sudo iptables -t nat -F
+sudo iptables -t nat -A POSTROUTING -o $WAN_IF -j MASQUERADE
+sudo iptables -A FORWARD -i $HOTSPOT_IF -o $WAN_IF -j ACCEPT
+sudo iptables -A FORWARD -i $WAN_IF -o $HOTSPOT_IF -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+# -------------------------------
+# Step 3: Ask for PS5 IP
+# -------------------------------
+read -p "Enter your PS5 IP (on hotspot subnet, e.g., 10.42.0.x): " PS5_IP
+
+# -------------------------------
+# Step 4: Start traffic tracker
+# -------------------------------
+echo "[3/4] Starting PS5 traffic capture..."
+DATA_FILE="/tmp/ps5_data.txt"
+> "$DATA_FILE"
+LAST_SEEN="/tmp/ps5_last_seen.txt"
+> "$LAST_SEEN"
+
+echo "[4/4] Tracker active. Press CTRL+C to stop."
+sleep 1
+
+# Background capture
+tcpdump -i $HOTSPOT_IF host $PS5_IP -nn -l 2>/dev/null | while read line; do
     NOW=$(date +%s)
 
-    echo "$line" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}\.[0-9]+' | while read ep; do
+    ENDPOINTS=$(echo "$line" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}\.[0-9]+')
+    for ep in $ENDPOINTS; do
         IP=$(echo $ep | sed 's/\.[0-9]*$//')
         PORT=$(echo $ep | grep -oE '[0-9]+$')
 
         if [ "$IP" != "$PS5_IP" ]; then
-            echo "$IP:$PORT $NOW" >> "$DATA_FILE"
+            KEY="$IP:$PORT"
+            grep -v "^$KEY " $LAST_SEEN > ${LAST_SEEN}.tmp
+            echo "$KEY $NOW" >> ${LAST_SEEN}.tmp
+            mv ${LAST_SEEN}.tmp $LAST_SEEN
+
+            if ! grep -q "^$KEY$" "$DATA_FILE"; then
+                echo "$KEY" >> "$DATA_FILE"
+            fi
         fi
     done
-
 done &
 
-# Display loop (smooth refresh)
+# Display loop (smooth)
 while true; do
     clear
-    echo "🎮 PS5 FAST TRACKER"
+    echo "🎮 PS5 Router + Tracker"
     echo "Time: $(date)"
-    echo "Tracking: $PS5_IP"
+    echo "PS5 IP: $PS5_IP"
+    echo "Hotspot IF: $HOTSPOT_IF | Internet IF: $WAN_IF"
     echo "======================================"
 
     NOW=$(date +%s)
-
-    # Get unique endpoints
     awk '{print $1}' $DATA_FILE | sort | uniq > /tmp/ps5_unique.txt
-
     COUNT=$(wc -l < /tmp/ps5_unique.txt)
     echo "🌐 Total Endpoints: $COUNT"
     echo ""
 
     while read ep; do
-        LAST=$(grep "$ep" $DATA_FILE | tail -n1 | awk '{print $2}')
+        LAST=$(grep "^$ep " $LAST_SEEN | tail -n1 | awk '{print $2}')
         AGE=$((NOW - LAST))
-
-        if [ "$AGE" -lt 5 ]; then
-            STATUS="🟢 ACTIVE"
-        else
-            STATUS="🔴 IDLE"
-        fi
-
+        if [ "$AGE" -lt 5 ]; then STATUS="🟢 ACTIVE"; else STATUS="🔴 IDLE"; fi
         echo "$ep - $STATUS (${AGE}s ago)"
     done < /tmp/ps5_unique.txt
 
     echo ""
     echo "======================================"
     echo "Updating every 2s..."
-
     sleep 2
 done
